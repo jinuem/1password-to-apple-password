@@ -64,7 +64,11 @@ CATEGORY_MAP = {
     "110": "API Credential",
     "111": "Medical Record",
     "112": "SSH Key",
+    "113": "Passkey",
 }
+
+PASSKEY_KEYWORDS = {"passkey", "fido2", "webauthn", "discoverable credential",
+                    "passkeys"}
 
 CREDIT_CARD_MARKERS = {"cardholder name", "number", "expiry date",
                        "verification number", "credit limit", "type"}
@@ -402,6 +406,79 @@ def classify_by_category(flattened):
     return categories
 
 
+def detect_passkeys(raw_items):
+    """Detect passkey items from raw JSON (before flattening).
+
+    Passkeys are identified by:
+    - categoryUuid '113' (Passkey type)
+    - presence of 'passkey' field in item details
+    - passkey-related keywords in field titles or values
+    """
+    passkey_items = []
+
+    for item in raw_items:
+        title = item.get("overview", {}).get("title", "")
+        url = item.get("overview", {}).get("url", "")
+        cat_id = item.get("categoryUuid", "")
+        vault = item.get("_vault_name", "")
+        uuid = item.get("uuid", "")
+        detected_by = None
+
+        # Check category UUID
+        if cat_id == "113":
+            detected_by = "category"
+
+        # Check for passkey field in details
+        details = item.get("details", {})
+        if not detected_by:
+            # Check loginFields for passkey type
+            for field in details.get("loginFields", []):
+                field_type = str(field.get("type", "")).lower()
+                field_name = str(field.get("name", "")).lower()
+                field_desg = str(field.get("designation", "")).lower()
+                if any(kw in val for kw in PASSKEY_KEYWORDS
+                       for val in [field_type, field_name, field_desg]):
+                    detected_by = "loginField"
+                    break
+
+        # Check sections for passkey references
+        if not detected_by:
+            for section in details.get("sections", []):
+                for field in section.get("fields", []):
+                    field_title = str(field.get("title", "")).lower()
+                    field_id = str(field.get("id", "")).lower()
+                    value_obj = field.get("value", {})
+                    value_str = ""
+                    if isinstance(value_obj, dict):
+                        value_str = json.dumps(value_obj).lower()
+                    else:
+                        value_str = str(value_obj).lower()
+
+                    if any(kw in val for kw in PASSKEY_KEYWORDS
+                           for val in [field_title, field_id, value_str]):
+                        detected_by = "sectionField"
+                        break
+                if detected_by:
+                    break
+
+        # Check overview title/tags for passkey mention
+        if not detected_by:
+            overview_text = json.dumps(item.get("overview", {})).lower()
+            if any(kw in overview_text for kw in PASSKEY_KEYWORDS):
+                detected_by = "overview"
+
+        if detected_by:
+            passkey_items.append({
+                "title": title,
+                "url": url,
+                "vault": vault,
+                "uuid": uuid,
+                "detected_by": detected_by,
+            })
+
+    return passkey_items
+
+
 # ── Step 6: Segregate and produce Apple import ──────────────────────────────
 
 def get_section_field_titles(row, headers):
@@ -653,7 +730,7 @@ def secure_delete_dir(dir_path):
 
 def generate_report(pux_path, vault_summary, state_counts, counts,
                     categories, duplicates, pw_analysis, per_vault,
-                    attachment_count=0):
+                    attachment_count=0, passkey_items=None):
     """Generate the summary report text."""
     lines = []
     lines.append("=" * 60)
@@ -704,6 +781,26 @@ def generate_report(pux_path, vault_summary, state_counts, counts,
     else:
         lines.append(f"  files/                       — "
                      f"no attachments found")
+    if passkey_items:
+        lines.append(f"  passkeys_manual.csv          — "
+                     f"{len(passkey_items)} passkey(s) "
+                     f"(re-enrollment checklist)")
+
+    # Passkeys
+    if passkey_items:
+        lines.append(f"\nPASSKEYS: {len(passkey_items)} detected "
+                     f"(CANNOT be auto-migrated)")
+        lines.append("-" * 40)
+        lines.append("Passkeys are cryptographic credentials that cannot be "
+                     "exported or transferred.")
+        lines.append("You must re-enroll each passkey in Apple Passwords "
+                     "by logging into the site.")
+        lines.append("")
+        for pk in passkey_items:
+            vault_info = f" [vault: {pk['vault']}]" if pk['vault'] else ""
+            lines.append(f"  - {pk['title']}: {pk['url']}{vault_info}")
+    else:
+        lines.append("\nPASSKEYS: None detected")
 
     # Duplicates
     if duplicates:
@@ -856,22 +953,44 @@ def main():
     categories = classify_by_category(flattened)
     duplicates = detect_duplicates(flattened)
     pw_analysis = analyze_passwords(flattened)
+    passkey_items = detect_passkeys(active_items)
 
     print(f"         Categories: {len(categories)}")
     print(f"         Duplicates: {len(duplicates)} group(s)")
     print(f"         Reused passwords: {len(pw_analysis['reused'])} group(s)")
     print(f"         Short passwords: {len(pw_analysis['short'])}")
     print(f"         Empty passwords: {len(pw_analysis['empty'])}")
+    if passkey_items:
+        print(f"         Passkeys: {len(passkey_items)} "
+              f"(CANNOT be migrated — need manual re-enrollment)")
 
     # Step 6: Segregate and export
     counts, _, _ = segregate_and_export(
         flattened, out_dir, dry_run=args.dry_run, per_vault=args.per_vault)
 
+    # Write passkeys checklist
+    if passkey_items and not args.dry_run:
+        pk_cols = ["Title", "URL", "Vault", "Action"]
+        with open(out_dir / "passkeys_manual.csv", 'w', newline='',
+                  encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=pk_cols)
+            writer.writeheader()
+            for pk in passkey_items:
+                writer.writerow({
+                    "Title": pk["title"],
+                    "URL": pk["url"],
+                    "Vault": pk["vault"],
+                    "Action": "Re-enroll passkey in Apple Passwords",
+                })
+        print(f"[Step 6] passkeys_manual.csv          — "
+              f"{len(passkey_items)} item(s) (re-enrollment checklist)")
+    counts["passkeys"] = len(passkey_items)
+
     # Generate and write report (always written, even in dry run)
     report_text = generate_report(
         pux_path, vault_summary, state_counts, counts,
         categories, duplicates, pw_analysis, args.per_vault,
-        attachment_count)
+        attachment_count, passkey_items)
 
     with open(out_dir / "report.txt", 'w', encoding='utf-8') as f:
         f.write(report_text)

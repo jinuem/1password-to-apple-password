@@ -93,6 +93,7 @@ export_output/
 ├── files/                        ← Attachments from 1Password (license files, documents)
 │   ├── license.pdf
 │   └── ...
+├── passkeys_manual.csv           ← Passkeys that need manual re-enrollment
 │
 └── per_vault/                    ← Only with --per-vault flag
     ├── apple_import_Private.csv
@@ -111,6 +112,7 @@ export_output/
 | Software licenses | `software_licenses.csv` | Store in a notes app or spreadsheet |
 | TOTP/2FA items | `apple_passwords_import.csv` | OTPAuth column preserved |
 | File attachments (licenses, docs) | `files/` folder | Copied as-is from .1pux |
+| Passkeys | `passkeys_manual.csv` | Cannot be migrated — re-enroll manually |
 
 ## Features
 
@@ -119,6 +121,17 @@ export_output/
 1Password stores file attachments (license files, PDFs, documents, images) inside the `.1pux` export in a `files/` folder. Apple Passwords doesn't support attachments, so these files would normally be lost during migration.
 
 The script automatically detects and copies all attachments from the `.1pux` to `export_output/files/`, preserving them exactly as they were stored in 1Password. The attachment count is included in `report.txt`.
+
+### Passkey Detection
+
+Passkeys (FIDO2/WebAuthn credentials) are cryptographic key pairs that **cannot be exported or transferred** between password managers. There is no standard format for passkey migration.
+
+The script detects all passkey items and writes `passkeys_manual.csv` — a checklist with the site name, URL, and vault. For each entry:
+
+1. Log into the site using your existing password (which *is* migrated)
+2. Go to the site's security settings
+3. Delete the old passkey (stored in 1Password)
+4. Create a new passkey (stored in Apple Passwords / iCloud Keychain)
 
 ### Category-Aware Classification
 
