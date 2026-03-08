@@ -13,6 +13,12 @@ Usage:
   python3 onepass_to_apple.py export.1pux --interactive      # choose vaults to include
   python3 onepass_to_apple.py export.1pux --secure-delete    # overwrite files with zeros before delete
 
+Output includes:
+  - Apple Passwords import CSV (with extra fields merged into Notes)
+  - Separated credit cards, software licenses, OTP review files
+  - files/ folder with all attachments (license files, documents) from 1Password
+  - Full analysis report (duplicates, password health, category breakdown)
+
 100% offline — no network calls, no APIs, no dependencies beyond Python 3.6+.
 """
 
@@ -66,8 +72,8 @@ CREDIT_CARD_MARKERS = {"cardholder name", "number", "expiry date",
 
 # ── Step 1: Extract .1pux ───────────────────────────────────────────────────
 
-def extract_1pux(pux_path):
-    """Extract .1pux (zip) and return parsed JSON from export.data."""
+def extract_1pux(pux_path, out_dir, dry_run=False):
+    """Extract .1pux (zip), return parsed JSON, and copy attachments."""
     pux_path = Path(pux_path)
     if not pux_path.exists():
         print(f"Error: File '{pux_path}' not found.")
@@ -92,9 +98,31 @@ def extract_1pux(pux_path):
     with open(data_file, 'r', encoding='utf-8') as f:
         data = json.load(f)
 
+    # Copy attachments from files/ folder if present
+    files_dir = Path(tmp_dir) / "files"
+    attachment_count = 0
+    if files_dir.exists() and files_dir.is_dir():
+        attachments = list(files_dir.rglob("*"))
+        attachment_files = [f for f in attachments if f.is_file()]
+        attachment_count = len(attachment_files)
+
+        if attachment_files and not dry_run:
+            dest_files = out_dir / "files"
+            if dest_files.exists():
+                shutil.rmtree(dest_files)
+            shutil.copytree(files_dir, dest_files)
+            print(f"[Step 1] Copied {attachment_count} attachment(s) "
+                  f"to {dest_files}/")
+        elif attachment_files and dry_run:
+            print(f"[Step 1] Found {attachment_count} attachment(s) "
+                  f"(not copied — dry run)")
+    else:
+        print(f"[Step 1] No files/ folder found in .1pux "
+              f"(no attachments)")
+
     shutil.rmtree(tmp_dir, ignore_errors=True)
     print(f"[Step 1] Extracted and parsed '{pux_path.name}'")
-    return data
+    return data, attachment_count
 
 
 # ── Step 2: Extract items from all vaults ───────────────────────────────────
@@ -624,7 +652,8 @@ def secure_delete_dir(dir_path):
 # ── Report ──────────────────────────────────────────────────────────────────
 
 def generate_report(pux_path, vault_summary, state_counts, counts,
-                    categories, duplicates, pw_analysis, per_vault):
+                    categories, duplicates, pw_analysis, per_vault,
+                    attachment_count=0):
     """Generate the summary report text."""
     lines = []
     lines.append("=" * 60)
@@ -668,6 +697,13 @@ def generate_report(pux_path, vault_summary, state_counts, counts,
     if per_vault and counts.get("per_vault_files"):
         lines.append(f"  per_vault/                   — "
                      f"{counts['per_vault_files']} vault file(s)")
+    if attachment_count > 0:
+        lines.append(f"  files/                       — "
+                     f"{attachment_count} attachment(s) "
+                     f"(license files, documents)")
+    else:
+        lines.append(f"  files/                       — "
+                     f"no attachments found")
 
     # Duplicates
     if duplicates:
@@ -787,7 +823,8 @@ def main():
     print()
 
     # Step 1: Extract
-    data = extract_1pux(pux_path)
+    data, attachment_count = extract_1pux(pux_path, out_dir,
+                                          dry_run=args.dry_run)
 
     # Step 2: Extract items
     all_items, vault_summary = extract_all_items(data)
@@ -833,7 +870,8 @@ def main():
     # Generate and write report (always written, even in dry run)
     report_text = generate_report(
         pux_path, vault_summary, state_counts, counts,
-        categories, duplicates, pw_analysis, args.per_vault)
+        categories, duplicates, pw_analysis, args.per_vault,
+        attachment_count)
 
     with open(out_dir / "report.txt", 'w', encoding='utf-8') as f:
         f.write(report_text)

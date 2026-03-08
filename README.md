@@ -90,6 +90,10 @@ export_output/
 ├── active_items.json             ← Active items only as JSON
 ├── report.txt                    ← Full report with analysis
 │
+├── files/                        ← Attachments from 1Password (license files, documents)
+│   ├── license.pdf
+│   └── ...
+│
 └── per_vault/                    ← Only with --per-vault flag
     ├── apple_import_Private.csv
     ├── apple_import_Work.csv
@@ -106,8 +110,15 @@ export_output/
 | Credit/debit cards | `credit_cards.csv` | Add to Apple Wallet manually |
 | Software licenses | `software_licenses.csv` | Store in a notes app or spreadsheet |
 | TOTP/2FA items | `apple_passwords_import.csv` | OTPAuth column preserved |
+| File attachments (licenses, docs) | `files/` folder | Copied as-is from .1pux |
 
 ## Features
+
+### File Attachments
+
+1Password stores file attachments (license files, PDFs, documents, images) inside the `.1pux` export in a `files/` folder. Apple Passwords doesn't support attachments, so these files would normally be lost during migration.
+
+The script automatically detects and copies all attachments from the `.1pux` to `export_output/files/`, preserving them exactly as they were stored in 1Password. The attachment count is included in `report.txt`.
 
 ### Category-Aware Classification
 
@@ -231,7 +242,7 @@ Import on Mac first — passwords sync via iCloud Keychain.
 
 The script runs 6 steps in sequence:
 
-1. **Extract** — Unzips the `.1pux` file and reads `export.data` (the JSON inside)
+1. **Extract** — Unzips the `.1pux` file, reads `export.data` (the JSON inside), and copies any attachments from the `files/` folder
 2. **Collect** — Walks all accounts and vaults, pulls every item into a flat list
 3. **Filter** — Keeps only active items (trashed/archived items are excluded)
 4. **Flatten** — Converts nested JSON fields into flat CSV columns
